@@ -1,0 +1,11 @@
+parent_compound,derivative_name,derivative_SMILES,compound_class,experimental_note
+Quercetin,,,Flavonoid,Add derivative if synthesized or identified
+Kaempferol,,,Flavonoid,Add derivative if synthesized or identified
+Emodin,,,Anthraquinone,Add derivative if synthesized or identified
+Chrysophanol,,,Anthraquinone,Add derivative if synthesized or identified
+Aloe-emodin,,,Anthraquinone,Add derivative if synthesized or identified
+Rhein,,,Anthraquinone,Add derivative if synthesized or identified
+Gallic Acid,,,Tannin / Phenolic,Add derivative if synthesized or identified
+Ellagic Acid,,,Tannin,Add derivative if synthesized or identified
+Catechin,,,Tannin / Flavonoid,Add derivative if synthesized or identified
+
