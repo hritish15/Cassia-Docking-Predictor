@@ -1,11 +1,7 @@
 import csv
 import json
-import os
-import platform
-import stat
 import subprocess
 import tempfile
-import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
@@ -273,33 +269,10 @@ DISEASE_TARGETS = {
     ]},
 }
 
+VINA_BIN = ROOT / "scripts" / "vina"
 PROTEINS_DIR = ROOT / "data" / "proteins"
 
 VINA_TIMEOUT = 300
-VINA_VERSION = "1.2.7"
-
-
-def _get_vina_bin() -> Path:
-    """Return the Vina binary path, downloading for the current platform if needed."""
-    local = ROOT / "scripts" / "vina"
-    linux = ROOT / "scripts" / f"vina_{VINA_VERSION}_linux_x86_64"
-    sys = platform.system().lower()
-
-    # macOS: use local binary as-is
-    if sys == "darwin" and local.exists():
-        return local
-
-    # Linux: download binary once, cache it
-    if sys == "linux":
-        if not linux.exists():
-            url = (f"https://github.com/ccsb-scripps/AutoDock-Vina/releases/"
-                   f"download/v{VINA_VERSION}/vina_{VINA_VERSION}_linux_x86_64")
-            urllib.request.urlretrieve(url, linux)
-            linux.chmod(linux.stat().st_mode | stat.S_IEXEC)
-        return linux
-
-    # Fallback
-    return local
 
 
 def smiles_to_pdb_block(smiles: str) -> str | None:
@@ -354,7 +327,7 @@ def run_vina_pair(smiles: str, disease_key: str, target_info: dict) -> str | Non
         size = target_info["size"]
         r = subprocess.run(
             [
-                str(_get_vina_bin()), "--receptor", str(receptor_pdbqt),
+                str(VINA_BIN), "--receptor", str(receptor_pdbqt),
                 "--ligand", str(ligand_pdbqt),
                 "--out", str(out_pdbqt),
                 "--center_x", str(center[0]), "--center_y", str(center[1]), "--center_z", str(center[2]),
@@ -375,33 +348,10 @@ def run_vina_pair(smiles: str, disease_key: str, target_info: dict) -> str | Non
 def show_3d_docking(compound_name: str, smiles: str, disease_key: str, target_info: dict) -> None:
     pdb_id = target_info["pdb_id"]
 
-    # --- Complex view (docked pose) — needs Vina + obabel ---
-    complex_html = None
-    try:
-        with st.spinner("Running docking for 3D view (~30s)..."):
-            vina_output = run_vina_pair(smiles, disease_key, target_info)
-        if vina_output:
-            with tempfile.TemporaryDirectory() as tmp:
-                tmp = Path(tmp)
-                pdbqt_f = tmp / "out.pdbqt"
-                pdb_f = tmp / "out.pdb"
-                pdbqt_f.write_text(vina_output)
-                subprocess.run(["obabel", str(pdbqt_f), "-O", str(pdb_f)],
-                               capture_output=True, text=True, timeout=30)
-                docked_pdb = pdb_f.read_text() if pdb_f.exists() else ""
-            if docked_pdb:
-                v = py3Dmol.view(width=500, height=400, viewergrid=(1, 1))
-                v.addModel(docked_pdb, "pdb")
-                v.setStyle({"stick": {"color": "#e3b44b"}})
-                v.zoomTo()
-                complex_html = v._make_html()
-    except Exception:
-        pass
-
     # --- Receptor view (RCSB) ---
     receptor_html = None
     try:
-        v = py3Dmol.view(query=f"pdb:{pdb_id}", width=400, height=350)
+        v = py3Dmol.view(query=f"pdb:{pdb_id}", width=500, height=400)
         v.setStyle({"cartoon": {"color": "spectrum"}})
         v.zoomTo()
         receptor_html = v._make_html()
@@ -413,7 +363,7 @@ def show_3d_docking(compound_name: str, smiles: str, disease_key: str, target_in
     lig_pdb = smiles_to_pdb_block(smiles)
     if lig_pdb:
         try:
-            v = py3Dmol.view(width=400, height=350, viewergrid=(1, 1))
+            v = py3Dmol.view(width=500, height=400, viewergrid=(1, 1))
             v.addModel(lig_pdb, "pdb")
             v.setStyle({"stick": {"colorscheme": "Jmol"}})
             v.zoomTo()
@@ -421,29 +371,23 @@ def show_3d_docking(compound_name: str, smiles: str, disease_key: str, target_in
         except Exception:
             pass
 
-    if not any([complex_html, receptor_html, ligand_html]):
-        st.error("Could not render any 3D views.")
+    if not any([receptor_html, ligand_html]):
+        st.error("Could not render 3D views.")
         return
 
     st.markdown(f"#### {target_info['name']} — 3D Molecular Views")
-
-    st.markdown("**Docked Ligand Pose**")
-    if complex_html:
-        st.components.v1.html(complex_html, height=420)
-    else:
-        st.caption("Not available (Vina/OpenBabel not installed on this server)")
 
     col1, col2 = st.columns(2)
     with col1:
         st.markdown(f"**Receptor (RCSB: {pdb_id})**")
         if receptor_html:
-            st.components.v1.html(receptor_html, height=370)
+            st.components.v1.html(receptor_html, height=420)
         else:
             st.caption("Not available")
     with col2:
         st.markdown(f"**Ligand: {compound_name}**")
         if ligand_html:
-            st.components.v1.html(ligand_html, height=370)
+            st.components.v1.html(ligand_html, height=420)
         else:
             st.caption("Not available")
 
@@ -631,7 +575,7 @@ def main() -> None:
                     tname = t.get("name", "")
                     st.write(f"  {tname} (PDB: {t.get('pdb_id', '')}): {aff} kcal/mol — {t.get('binding_label', '')}")
 
-                    if docking_status == "complete" and _get_vina_bin().exists():
+                    if docking_status == "complete" and VINA_BIN.exists():
                         # Find matching target info for 3D
                         matched = None
                         for dt in DISEASE_TARGETS.get(disease_key, {}).get("targets", []):
