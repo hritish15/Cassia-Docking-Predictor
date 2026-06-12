@@ -81,12 +81,3 @@ python scripts/dock_all_compounds.py --vina
 
 The **predictive rate** is the therapeutic score expressed as a percentage.
 
-## ML model (legacy)
-
-The original SMILES-based ML models (kNN and RandomForest) have been moved to `models/ml/`. They remain available as a fallback in the Streamlit app if no docking results exist.
-
-```bash
-# Train ML models (now saved to models/ml/)
-python scripts/train_basic_model.py
-python scripts/train_sklearn_model.py
-```
