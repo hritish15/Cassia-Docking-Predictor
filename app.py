@@ -346,55 +346,33 @@ def run_vina_pair(smiles: str, disease_key: str, target_info: dict) -> str | Non
 
 
 def show_3d_docking(compound_name: str, smiles: str, disease_key: str, target_info: dict) -> None:
-    # Run Vina
-    with st.spinner("Running docking for 3D view (~30s)..."):
-        try:
-            vina_output = run_vina_pair(smiles, disease_key, target_info)
-        except Exception:
-            vina_output = None
-
-    if vina_output is None:
-        st.error("Docking failed. Ensure Vina is available and the ligand can be processed.")
-        return
-
-    # Convert Vina output PDBQT → PDB
-    docked_pdb = ""
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            pdbqt_f = tmp / "out.pdbqt"
-            pdb_f = tmp / "out.pdb"
-            pdbqt_f.write_text(vina_output)
-            subprocess.run(["obabel", str(pdbqt_f), "-O", str(pdb_f)],
-                           capture_output=True, text=True, timeout=30)
-            if pdb_f.exists():
-                docked_pdb = pdb_f.read_text()
-    except Exception:
-        pass
-
-    if not docked_pdb:
-        st.error("Could not convert docked pose for 3D view.")
-        return
-
-    # Generate HTML for the three views
     pdb_id = target_info["pdb_id"]
+
+    # --- Complex view (docked pose) — needs Vina + obabel ---
     complex_html = None
-    receptor_html = None
-    ligand_html = None
-
-    st.markdown(f"#### {target_info['name']} — Docking Pose (exhaustiveness=2)")
-
-    # Complex view: docked ligand (PDB) + receptor fetched from RCSB
     try:
-        v = py3Dmol.view(width=500, height=400, viewergrid=(1, 1))
-        v.addModel(docked_pdb, "pdb")
-        v.setStyle({"stick": {"color": "#e3b44b"}})
-        v.zoomTo()
-        complex_html = v._make_html()
+        with st.spinner("Running docking for 3D view (~30s)..."):
+            vina_output = run_vina_pair(smiles, disease_key, target_info)
+        if vina_output:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                pdbqt_f = tmp / "out.pdbqt"
+                pdb_f = tmp / "out.pdb"
+                pdbqt_f.write_text(vina_output)
+                subprocess.run(["obabel", str(pdbqt_f), "-O", str(pdb_f)],
+                               capture_output=True, text=True, timeout=30)
+                docked_pdb = pdb_f.read_text() if pdb_f.exists() else ""
+            if docked_pdb:
+                v = py3Dmol.view(width=500, height=400, viewergrid=(1, 1))
+                v.addModel(docked_pdb, "pdb")
+                v.setStyle({"stick": {"color": "#e3b44b"}})
+                v.zoomTo()
+                complex_html = v._make_html()
     except Exception:
         pass
 
-    # Receptor view: fetch via PDB ID from RCSB
+    # --- Receptor view (RCSB) ---
+    receptor_html = None
     try:
         v = py3Dmol.view(query=f"pdb:{pdb_id}", width=400, height=350)
         v.setStyle({"cartoon": {"color": "spectrum"}})
@@ -403,7 +381,8 @@ def show_3d_docking(compound_name: str, smiles: str, disease_key: str, target_in
     except Exception:
         pass
 
-    # Ligand-only view: from RDKit
+    # --- Ligand view (RDKit) ---
+    ligand_html = None
     lig_pdb = smiles_to_pdb_block(smiles)
     if lig_pdb:
         try:
@@ -415,12 +394,17 @@ def show_3d_docking(compound_name: str, smiles: str, disease_key: str, target_in
         except Exception:
             pass
 
-    # Display the three viewers
+    if not any([complex_html, receptor_html, ligand_html]):
+        st.error("Could not render any 3D views.")
+        return
+
+    st.markdown(f"#### {target_info['name']} — 3D Molecular Views")
+
     st.markdown("**Docked Ligand Pose**")
     if complex_html:
         st.components.v1.html(complex_html, height=420)
     else:
-        st.caption("Not available")
+        st.caption("Not available (Vina/OpenBabel not installed on this server)")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -435,7 +419,6 @@ def show_3d_docking(compound_name: str, smiles: str, disease_key: str, target_in
             st.components.v1.html(ligand_html, height=370)
         else:
             st.caption("Not available")
-
 
 def main() -> None:
     st.set_page_config(
