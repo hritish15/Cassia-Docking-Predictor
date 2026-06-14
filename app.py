@@ -113,21 +113,28 @@ def affinity_to_importance(avg_affinity: float) -> float:
 
 @st.cache_data
 def load_optimization_csv() -> list[dict]:
-    lines = OPTIMIZATIONS_PATH.read_text().strip().splitlines()
     rows = []
-    for line in lines[1:]:
-        parts = [p.strip() for p in line.split("\t")]
-        if len(parts) < 2:
-            continue
-        values = {}
-        for i, col in enumerate(PHYTO_COLS):
-            raw = parts[i + 1] if i + 1 < len(parts) else ""
-            values[col] = float(raw) if raw.strip() else 0.0
-        rows.append({
-            "plant_part": parts[0],
-            "solvent": parts[-1],
-            "values": values,
-        })
+
+    with open(OPTIMIZATIONS_PATH, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            values = {}
+
+            for col in PHYTO_COLS:
+                raw = row.get(col, "")
+                try:
+                    values[col] = float(raw) if str(raw).strip() else 0.0
+                except ValueError:
+                    values[col] = 0.0
+
+            rows.append({
+                "plant_part": row.get("PART", ""),
+                "solvent": row.get("SOLUTION", ""),
+                "temperature": row.get("TEMPERATURE", "N/A"),
+                "values": values,
+            })
+
     return rows
 
 
@@ -196,27 +203,27 @@ def render_optimization_page(docking, optimisation_rows) -> None:
                         if presence >= 0.75:
                             covered.add(csv_col)
                         score += w * sw * presence
-                scored.append((score, row["plant_part"], row["solvent"], covered))
+                scored.append((score, row["plant_part"], row["solvent"], row["temperature"], covered))
 
             scored.sort(key=lambda x: -x[0])
             top = scored[:5]
 
             st.write("**Top extraction methods**")
             st.markdown(
-                f'<div style="display:grid;grid-template-columns:60px 100px 130px 1fr;gap:4px;font-size:0.8rem;'
+                f'<div style="display:grid;grid-template-columns:60px 100px 110px 110px 1fr;gap:4px;font-size:0.8rem;'
                 f'color:#a8c3b3;margin-bottom:4px">'
-                f'<div>Score</div><div>Part</div><div>Solvent</div><div>Classes</div></div>',
+                f'<div>Score</div><div>Part</div><div>Solvent</div><div>Temperature</div><div>Classes</div></div>',
                 unsafe_allow_html=True,
             )
-            for score, part, solvent, covered in top:
+            for score, part, solvent, temp, covered in top:
                 covered_s = ", ".join(sorted(covered)) if covered else "—"
-                pct = int(score / max(s[0] for s in scored) * 100) if scored else 0
                 st.markdown(
-                    f'<div style="display:grid;grid-template-columns:60px 100px 130px 1fr;gap:4px;font-size:0.85rem;'
+                    f'<div style="display:grid;grid-template-columns:60px 100px 110px 110px 1fr;gap:4px;font-size:0.85rem;'
                     f'align-items:center;margin-bottom:2px">'
                     f'<div style="color:#4fd0b0;font-weight:700">{score:.2f}</div>'
                     f'<div>{part}</div>'
                     f'<div>{solvent}</div>'
+                    f'<div>{temp}</div>'
                     f'<div style="font-size:0.8rem;color:#a8c3b3">{covered_s}</div>'
                     f'</div>',
                     unsafe_allow_html=True,
@@ -229,13 +236,13 @@ def render_optimization_page(docking, optimisation_rows) -> None:
         best = []
         for row in optimisation_rows:
             val = row["values"].get(col, 0.0)
-            best.append((val, row["plant_part"], row["solvent"]))
+            best.append((val, row["plant_part"], row["solvent"], row["temperature"]))
         best.sort(key=lambda x: -x[0])
         top = best[:3]
         items = []
-        for val, part, solvent in top:
+        for val, part, solvent, temp in top:
             label = "Present" if val >= 1.0 else ("Mild" if val >= 0.75 else "No")
-            items.append(f"{part} + {solvent} → {label}")
+            items.append(f"{part} + {solvent} ({temp}) → {label}")
         st.write(f"**{col}:** {' | '.join(items)}")
 
 
@@ -339,7 +346,6 @@ def run_vina_pair(smiles: str, disease_key: str, target_info: dict) -> str | Non
         if r.returncode != 0:
             return None
 
-        # Read the best pose
         return out_pdbqt.read_text()
 
     return None
@@ -348,7 +354,6 @@ def run_vina_pair(smiles: str, disease_key: str, target_info: dict) -> str | Non
 def show_3d_docking(compound_name: str, smiles: str, disease_key: str, target_info: dict) -> None:
     pdb_id = target_info["pdb_id"]
 
-    # --- Receptor view (RCSB) ---
     receptor_html = None
     try:
         v = py3Dmol.view(query=f"pdb:{pdb_id}", width=500, height=400)
@@ -358,7 +363,6 @@ def show_3d_docking(compound_name: str, smiles: str, disease_key: str, target_in
     except Exception:
         pass
 
-    # --- Ligand view (RDKit) ---
     ligand_html = None
     lig_pdb = smiles_to_pdb_block(smiles)
     if lig_pdb:
@@ -538,6 +542,25 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
+    # Calculate Synergy Score
+    disease_predictions = output.get("disease_predictions", {})
+    scores_list = [
+        pred.get("therapeutic_score")
+        for pred in disease_predictions.values()
+        if pred.get("therapeutic_score") is not None
+    ]
+    
+    if scores_list and docking_status == "complete":
+        # Synergy is modeled from the aggregate target landscape efficiency
+        avg_score = sum(scores_list) / len(scores_list)
+        high_hits = sum(1 for s in scores_list if s >= 0.7)
+        synergy_score = min(1.0, avg_score + (high_hits * 0.05))
+        synergy_pct = f"{int(synergy_score * 100)}%"
+        synergy_color = score_color(synergy_score)
+    else:
+        synergy_pct = "N/A"
+        synergy_color = "#a8c3b3"
+
     left, right = st.columns([1.2, 1])
     with left:
         st.subheader(compound["compound_name"])
@@ -549,8 +572,12 @@ def main() -> None:
         st.write("**Predictor info**")
         st.write("Method: `Molecular Docking`")
         st.write(f"Compound status: `{docking_status}`")
-        disease_count = len(output.get("disease_predictions", {}))
+        disease_count = len(disease_predictions)
         st.write(f"Disease areas assessed: `{disease_count}`")
+        st.markdown(
+            f'**Overall Synergy Potential:** <span style="color:{synergy_color}; font-weight:800; font-size:1.1rem;">{synergy_pct}</span>',
+            unsafe_allow_html=True
+        )
 
     st.write("**SMILES input**")
     st.markdown(f'<div class="smiles-box">{compound.get("SMILES", "")}</div>', unsafe_allow_html=True)
@@ -558,8 +585,7 @@ def main() -> None:
     if docking_status == "complete":
         st.subheader("Docking-Based Therapeutic Potential")
 
-        predictions_data = output.get("disease_predictions", {})
-        items = list(predictions_data.items())
+        items = list(disease_predictions.items())
         cols_per_row = 3
         for start in range(0, len(items), cols_per_row):
             columns = st.columns(cols_per_row)
@@ -568,7 +594,7 @@ def main() -> None:
                     render_docking_card(disease_key, prediction)
 
         with st.expander("Per-target binding details"):
-            for disease_key, prediction in predictions_data.items():
+            for disease_key, prediction in disease_predictions.items():
                 st.write(f"**{DISEASE_LABELS.get(disease_key, disease_key)}**")
                 for t in prediction.get("all_targets", []):
                     aff = t.get("binding_affinity_kcal_mol", "N/A")
@@ -576,7 +602,6 @@ def main() -> None:
                     st.write(f"  {tname} (PDB: {t.get('pdb_id', '')}): {aff} kcal/mol — {t.get('binding_label', '')}")
 
                     if docking_status == "complete" and VINA_BIN.exists():
-                        # Find matching target info for 3D
                         matched = None
                         for dt in DISEASE_TARGETS.get(disease_key, {}).get("targets", []):
                             if dt["name"] == tname:
